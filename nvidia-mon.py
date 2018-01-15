@@ -4,6 +4,9 @@
 
 requires nvidia-ml-py, can be installed via pip (currently only py2)
 
+TODO: remember data, then provide it some way to other program for (continuous)
+      visualization
+
 Author: Christian Herdtweck
 """
 
@@ -20,7 +23,7 @@ from subprocess import call
 try:
     from pynvml import *
 except ImportError:
-    print('nvidia-ml-py not installed')
+    print('nvidia-ml-py not installed', file=sys.stderr)
     sys.exit(1)
 
 
@@ -48,12 +51,17 @@ def parse_args(args=None):
                              'start-end;duration;percent, where start,end are '
                              'H[H[:MM]], duration is minutes [int], and '
                              'percent is int')
+    parser.add_argument('-l', '--log-file', default='', type=str,
+                        help='Log to given file; if no file given (default), '
+                             'log to stdout')
     args = parser.parse_args(args)
 
+    # parse shutdown args
     if args.shutdown:
         shut_args = re.match(SHUT_ARGS_PATTERN, args.shutdown)
         if not shut_args:
-            print('failed to parse shutdown args {0!r}'.format(args.shutdown))
+            print('failed to parse shutdown args {0!r}'.format(args.shutdown),
+                  file=sys.stderr)
             return 2
         shut_args = shut_args.groupdict()
         shut_args['start'] = time(int(shut_args['start_h']),
@@ -84,14 +92,14 @@ def get_data(handle):
     return result
 
 
-def print_data(data, will_shut):
+def print_data(data, will_shut, log):
     """ nice readable printing of result from get_data """
     shutstr = ', will shut down at {0:%H:%M:%S}'.format(will_shut) \
             if will_shut else ''
-    print('{0[time]:%H:%M:%S}: gpu {0[gpu-idx]} at {0[gpu]:02d}%, '
-          'mem at {0[mem]:02d}%, temp {0[temp]:02d}C {1}'
-          .format(data, shutstr))
-    sys.stdout.flush()
+    msg = '{0[time]:%H:%M:%S}: gpu {0[gpu-idx]} at {0[gpu]:02d}%, ' \
+          'mem at {0[mem]:02d}%, temp {0[temp]:02d}C {1}' \
+          .format(data, shutstr)
+    log.info(msg)
 
 
 def check_shutdown(shut_args, gpu_usage, planned_shut, log):
@@ -139,8 +147,13 @@ def do_shutdown():
 def main(args=None):
     """ main function, called when running this as script """
     args, shut_args = parse_args(args)
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
     log = logging.getLogger('nvidia-mon')
+    log.setLevel(logging.DEBUG if args.verbose else logging.INFO)
+    if args.log_file:
+        log.addHandler(logging.FileHandler(args.log_file))
+    else:
+        log.addHandler(logging.StreamHandler(sys.stdout))
+    log.info('start logging')
     log.debug('shut args: {0}'.format(shut_args))
     will_shut = None
 
@@ -148,7 +161,7 @@ def main(args=None):
         log.debug('initializing nvml')
         nvmlInit()
         device_count = nvmlDeviceGetCount()
-        print("found %i gpus" % device_count)
+        log.debug("found %i gpus" % device_count)
         while True:
             handle = nvmlDeviceGetHandleByIndex(args.gpu_index)
             data = get_data(handle)
@@ -156,7 +169,7 @@ def main(args=None):
             if shut_args:
                 will_shut = check_shutdown(shut_args, data['gpu'], will_shut,
                                             log)
-            print_data(data, will_shut)
+            print_data(data, will_shut, log)
             sleep(args.interval)
     except Exception:
         raise
@@ -164,6 +177,8 @@ def main(args=None):
         log.debug('shutting down nvml')
         nvmlShutdown()
     
+    log.debug('done.')
+    logging.shutdown()
     return 0
 
 
